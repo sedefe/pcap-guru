@@ -14,3 +14,6 @@ def lit2i(bs):
 
 def i2lit(n, n_bytes):
     return (n % 2**n_bytes).to_bytes(n_bytes, byteorder='little')
+
+def ip2str(b):
+    return '.'.join(map(str, b))

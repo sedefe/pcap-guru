@@ -1,24 +1,13 @@
 import sys
 import zstandard as zstd
 from pathlib import Path
+from collections import Counter
 
 from utils import big2i, lit2i, i2lit
-
+from const import PCAP_FILE_HEADER_LEN, PCAP_PACKET_HEADER_LEN
+from encoder import Encoder
 
 ZSTD_LEVEL = 1
-
-
-class Context:
-    def __init__(self):
-        self.ts1 = 0
-        self.ts2 = 0
-
-    def upd_ts(self, ts1, ts2):
-        d1 = ts1 - self.ts1
-        d2 = ts2 - self.ts2
-        self.ts1 = ts1
-        self.ts2 = ts2
-        return d1, d2
 
 
 def main(argv):
@@ -29,39 +18,27 @@ def main(argv):
     with open(fpath_in, 'rb') as f:
         data = f.read()
         n_bytes = len(data)
-    print(f"{n_bytes / 1e6:.3f} MB")
 
     n_compressed_0 = len(zstd.ZstdCompressor(level=ZSTD_LEVEL).compress(data))
     cr0 = n_bytes / n_compressed_0
-    print(f"CR0: {cr0:.3f}")
+    print(
+        f"CR0: {cr0:.3f} ({n_bytes / 1e6:.2f} -> {n_compressed_0 / 1e6:.2f} MB)")
 
-    file_header = data[:24]
+    file_header = data[:PCAP_FILE_HEADER_LEN]
 
-    i = 24
+    i = PCAP_FILE_HEADER_LEN
     n_packets = 0
     res = [file_header]
-    context = Context()
+    encoder = Encoder()
+
     while i < n_bytes:
         n_packets += 1
-        ts1 = lit2i(data[i:i+4])
-        ts2 = lit2i(data[i+4:i+8])
         cpl = lit2i(data[i+8:i+12])
-        opl = lit2i(data[i+12:i+16])
 
-        ts1, ts2 = context.upd_ts(ts1, ts2)
+        p = encoder.process(data[i:i + PCAP_PACKET_HEADER_LEN + cpl])
+        res.append(p)
 
-        res.append(b''.join([
-            i2lit(ts1, 4),
-            i2lit(ts2, 4),
-            i2lit(cpl, 4),
-            i2lit(opl, 4),
-        ]))
-        i += 16
-
-        # process packet
-        res.append(data[i:i+cpl])
-
-        i += cpl
+        i += PCAP_PACKET_HEADER_LEN + cpl
 
     print(f"{n_packets} packets")
 
@@ -69,7 +46,8 @@ def main(argv):
     n_compressed_1 = len(zstd.ZstdCompressor(
         level=ZSTD_LEVEL).compress(data_processed))
     cr1 = n_bytes / n_compressed_1
-    print(f"CR1: {cr1:.3f} ({cr1/cr0 - 1:+.2%})")
+    print(f"CR1: {cr1:.3f} ({len(data_processed) / 1e6:.2f} -> {n_compressed_1 / 1e6:.2f} MB), "
+          f"{cr1/cr0 - 1:+.2%}")
 
 
 if __name__ == "__main__":
