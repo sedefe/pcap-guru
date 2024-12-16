@@ -23,8 +23,10 @@ class Context:
 class Rules:
     PCAP_TS_DIFF = True
     PCAP_TS_INV = True
+    PCAP_OPL_DIFF = False
 
     IP_LEN_DIFF = False
+    IP_LEN_PCAP_LEN = True
     IP_ID_DIFF = True
     IP_TTL_DIFF = False
     IP_CS_DIFF = False
@@ -59,6 +61,9 @@ class Encoder:
         if Rules.PCAP_TS_INV:
             self.p[:8] = self.p[:8][::-1]
 
+        if Rules.PCAP_OPL_DIFF:
+            self.p[12:16] = i2big(opl-cpl, 4)
+
         eth_off = 16
 
         # Eth
@@ -88,6 +93,10 @@ class Encoder:
             if Rules.IP_LEN_DIFF:
                 d = ip_len - self.ctx.ip_len[ip_src]
                 self.ctx.ip_len[ip_src] = ip_len
+                self.p[ip_off+2:ip_off+4] = i2big(d, 2)
+
+            if Rules.IP_LEN_PCAP_LEN:
+                d = cpl - ip_len
                 self.p[ip_off+2:ip_off+4] = i2big(d, 2)
 
             if Rules.IP_ID_DIFF:
@@ -169,5 +178,5 @@ class Encoder:
                     self.p[ip_off+12:ip_off+18] = eth_dst
                     self.p[ip_off+18:tl_off+2] = ip_dst
                     self.p[tl_off+2:tl_off+4] = tcp_dst
-
+                # print(f'{b2str(self.p[:54])}')
         return self.p
