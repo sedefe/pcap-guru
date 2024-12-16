@@ -1,3 +1,5 @@
+import numpy as np
+
 from utils import lit2i, big2i, i2big, i2lit, ip2str, b2str
 from const import EtherType, IpType
 from collections import defaultdict, Counter
@@ -23,10 +25,11 @@ class Rules:
     PCAP_TS1_DIFF = True
     PCAP_TS2_DIFF = True
 
-    IP_LEN_DIFF = True
+    IP_LEN_DIFF = False
     IP_ID_DIFF = True
-    IP_TTL_DIFF = True
-    IP_CS_DIFF = True
+    IP_TTL_DIFF = False
+    IP_CS_DIFF = False
+    IP_CS_CALC = True
 
     TCP_SEQACK_DIFF = True
     TCP_WIN_DIFF = True
@@ -99,6 +102,17 @@ class Encoder:
                 d = ip_cs - self.ctx.ip_cs[ip_srcaddr]
                 self.ctx.ip_cs[ip_srcaddr] = ip_cs
                 self.p[ip_off+10:ip_off+12] = i2big(d, 2)
+
+            if Rules.IP_CS_CALC:
+                cs = 0
+                for i in range(ip_off, tl_off, 2):
+                    if i == ip_off + 10:
+                        continue
+                    cs += big2i(p[i:i+2])
+                while cs > 0xffff:
+                    cs = (cs // 2**16) + (cs % 2**16)
+
+                self.p[ip_off+10:ip_off+12] = i2big(ip_cs + cs, 2)
 
             if ip_proto == IpType.TCP:
                 payload_off = tl_off + 4 * (p[tl_off+12] // 16)
