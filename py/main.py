@@ -3,7 +3,7 @@ import zstandard as zstd
 from pathlib import Path
 from collections import Counter
 
-from utils import big2i, lit2i, i2lit
+from utils import lit2i
 from const import PCAP_FILE_HEADER_LEN, PCAP_PACKET_HEADER_LEN
 from encoder import Encoder
 
@@ -48,7 +48,6 @@ def main(argv):
     cr1 = n_bytes / n_compressed_1
     print(f"CR1: {cr1:.3f} ({len(data_processed) / 1e6:.2f} -> {n_compressed_1 / 1e6:.2f} MB), "
           f"{cr1/cr0 - 1:+.2%}")
-
 
 if __name__ == "__main__":
     main(sys.argv)
