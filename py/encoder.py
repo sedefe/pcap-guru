@@ -5,6 +5,24 @@ from const import EtherType, IpType
 from collections import defaultdict, Counter
 
 
+class Stat:
+    def __init__(self):
+        self.n_total = 0
+        self.s_total = 0
+        self.n_ipv4 = 0
+        self.s_ipv4 = 0
+        self.n_tcp = 0
+        self.s_tcp = 0
+        self.s_tcp_pl = 0
+
+    def print(self):
+        print(
+            f'IPv4: {self.n_ipv4 / self.n_total:5.2%} {self.s_ipv4 / self.s_total:5.2%}')
+        print(
+            f'TCP:  {self.n_tcp / self.n_total:5.2%} {self.s_tcp / self.s_total:5.2%}')
+        print(f'TCP payload: {self.s_tcp_pl / self.s_total:5.2%}')
+
+
 class Context:
     def __init__(self):
         self.ts = 0
@@ -42,27 +60,29 @@ class Rules:
 class Encoder:
     def __init__(self):
         self.ctx = Context()
-        self.p = None
+        self.stat = Stat()
         self.n_packets = 0
 
     def process(self, p):
-        self.n_packets += 1
-        self.p = bytearray(p)
+        p = bytearray(p)
         ts = lit2i(p[0:4]) * 2**32 + lit2i(p[4:8])
         cpl = lit2i(p[8:12])
         opl = lit2i(p[12:16])
+
+        self.stat.n_total += 1
+        self.stat.s_total += cpl
 
         # Pcap
         if Rules.PCAP_TS_DIFF:
             d = ts - self.ctx.ts
             self.ctx.ts = ts
-            self.p[:8] = i2big(d, 8)
+            p[:8] = i2big(d, 8)
 
         if Rules.PCAP_TS_INV:
-            self.p[:8] = self.p[:8][::-1]
+            p[:8] = p[:8][::-1]
 
         if Rules.PCAP_OPL_DIFF:
-            self.p[12:16] = i2big(opl-cpl, 4)
+            p[12:16] = i2big(opl - cpl, 4)
 
         eth_off = 16
 
@@ -78,6 +98,9 @@ class Encoder:
 
         # IP
         if ether_type == EtherType.IPv4:
+            self.stat.n_ipv4 += 1
+            self.stat.s_ipv4 += cpl
+
             ip_ihl = p[ip_off] % 16
             tl_off = ip_off + 4 * ip_ihl
             ip_proto = p[ip_off+9]
@@ -87,34 +110,10 @@ class Encoder:
             ip_ttl = p[ip_off+8]
             ip_cs = big2i(p[ip_off+10:ip_off+12])
 
-            ip_src = p[ip_off+12:ip_off+16]
-            ip_dst = p[ip_off+16:ip_off+20]
+            ip_src = bytes(p[ip_off+12:ip_off+16])
+            ip_dst = bytes(p[ip_off+16:ip_off+20])
 
-            if Rules.IP_LEN_DIFF:
-                d = ip_len - self.ctx.ip_len[ip_src]
-                self.ctx.ip_len[ip_src] = ip_len
-                self.p[ip_off+2:ip_off+4] = i2big(d, 2)
-
-            if Rules.IP_LEN_PCAP_LEN:
-                d = cpl - ip_len
-                self.p[ip_off+2:ip_off+4] = i2big(d, 2)
-
-            if Rules.IP_ID_DIFF:
-                d = ip_id - self.ctx.ip_id[ip_src]
-                self.ctx.ip_id[ip_src] = ip_id
-                self.p[ip_off+4:ip_off+6] = i2big(d, 2)
-
-            if Rules.IP_TTL_DIFF:
-                d = ip_ttl - self.ctx.ip_ttl[ip_src]
-                self.ctx.ip_ttl[ip_src] = ip_ttl
-                self.p[ip_off+8:ip_off+9] = i2big(d, 1)
-
-            if Rules.IP_CS_DIFF:
-                d = ip_cs - self.ctx.ip_cs[ip_src]
-                self.ctx.ip_cs[ip_src] = ip_cs
-                self.p[ip_off+10:ip_off+12] = i2big(d, 2)
-
-            if Rules.IP_CS_CALC:
+            if Rules.IP_CS_CALC:  # must come first
                 cs = 0
                 for i in range(ip_off, tl_off, 2):
                     if i == ip_off + 10:
@@ -123,12 +122,43 @@ class Encoder:
                 while cs > 0xffff:
                     cs = (cs // 2**16) + (cs % 2**16)
 
-                self.p[ip_off+10:ip_off+12] = i2big(ip_cs + cs, 2)
+                p[ip_off+10:ip_off+12] = i2big(ip_cs + cs, 2)
+
+            if Rules.IP_LEN_DIFF:
+                d = ip_len - self.ctx.ip_len[ip_src]
+                self.ctx.ip_len[ip_src] = ip_len
+                p[ip_off+2:ip_off+4] = i2big(d, 2)
+
+            if Rules.IP_LEN_PCAP_LEN:
+                d = cpl - ip_len
+                p[ip_off+2:ip_off+4] = i2big(d, 2)
+
+            if Rules.IP_ID_DIFF:
+                d = ip_id - self.ctx.ip_id[ip_src]
+                self.ctx.ip_id[ip_src] = ip_id
+                p[ip_off+4:ip_off+6] = i2big(d, 2)
+
+            if Rules.IP_TTL_DIFF:
+                d = ip_ttl - self.ctx.ip_ttl[ip_src]
+                self.ctx.ip_ttl[ip_src] = ip_ttl
+                p[ip_off+8:ip_off+9] = i2big(d, 1)
+
+            if Rules.IP_CS_DIFF:
+                d = ip_cs - self.ctx.ip_cs[ip_src]
+                self.ctx.ip_cs[ip_src] = ip_cs
+                p[ip_off+10:ip_off+12] = i2big(d, 2)
 
             if ip_proto == IpType.TCP:
+                self.stat.n_tcp += 1
+                self.stat.s_tcp += cpl
+
                 payload_off = tl_off + 4 * (p[tl_off+12] // 16)
-                tcp_src = p[tl_off:tl_off+2]
-                tcp_dst = p[tl_off+2:tl_off+4]
+                padding_off = ip_off + ip_len
+
+                self.stat.s_tcp_pl += padding_off - payload_off
+
+                tcp_src = bytes(p[tl_off:tl_off+2])
+                tcp_dst = bytes(p[tl_off+2:tl_off+4])
                 tcp_seq = big2i(p[tl_off+4:tl_off+8])
                 tcp_ack = big2i(p[tl_off+8:tl_off+12])
                 tcp_win = big2i(p[tl_off+14:tl_off+16])
@@ -140,16 +170,16 @@ class Encoder:
                 if Rules.TCP_SEQACK_DIFF:
                     d = tcp_seq - self.ctx.tcp_seq[session]
                     self.ctx.tcp_seq[session] = tcp_seq
-                    self.p[tl_off+4:tl_off+8] = i2big(d, 4)
+                    p[tl_off+4:tl_off+8] = i2big(d, 4)
 
                     d = tcp_ack - self.ctx.tcp_ack[session]
                     self.ctx.tcp_ack[session] = tcp_ack
-                    self.p[tl_off+8:tl_off+12] = i2big(d, 4)
+                    p[tl_off+8:tl_off+12] = i2big(d, 4)
 
                 if Rules.TCP_WIN_DIFF:
                     d = tcp_win - self.ctx.tcp_win[session]
                     self.ctx.tcp_win[session] = tcp_win
-                    self.p[tl_off+14:tl_off+16] = i2big(d, 2)
+                    p[tl_off+14:tl_off+16] = i2big(d, 2)
 
                 if Rules.TCP_TS_DIFF:
                     i = tl_off + 20
@@ -166,17 +196,17 @@ class Encoder:
                                 tcp_ts = big2i(p[i+2:i+10])
                                 d = tcp_ts - self.ctx.tcp_ts[session]
                                 self.ctx.tcp_ts[session] = tcp_ts
-                                self.p[i+2:i+10] = i2big(d, 8)
+                                p[i+2:i+10] = i2big(d, 8)
                                 i += 10
                             case _:
                                 assert False, f'unknown case {opt_kind}'
 
                 if Rules.COMBINE_ADDR:
-                    self.p[eth_off+0:eth_off+6] = eth_src
-                    self.p[eth_off+6:eth_off+10] = ip_src
-                    self.p[eth_off+10:eth_off+12] = tcp_src
-                    self.p[ip_off+12:ip_off+18] = eth_dst
-                    self.p[ip_off+18:tl_off+2] = ip_dst
-                    self.p[tl_off+2:tl_off+4] = tcp_dst
-                # print(f'{b2str(self.p[:54])}')
-        return self.p
+                    p[eth_off+0:eth_off+6] = eth_src
+                    p[eth_off+6:eth_off+10] = ip_src
+                    p[eth_off+10:eth_off+12] = tcp_src
+                    p[ip_off+12:ip_off+18] = eth_dst
+                    p[ip_off+18:tl_off+2] = ip_dst
+                    p[tl_off+2:tl_off+4] = tcp_dst
+                # print(f'{b2str(p[:54])}')
+        return p
