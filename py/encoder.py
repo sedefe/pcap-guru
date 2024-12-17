@@ -33,6 +33,7 @@ class Context:
         self.ip_cs = defaultdict(lambda: 0)
 
         self.tcp_seq = defaultdict(lambda: 0)
+        self.tcp_nseq = defaultdict(lambda: 0)
         self.tcp_ack = defaultdict(lambda: 0)
         self.tcp_win = defaultdict(lambda: 0)
         self.tcp_ts = defaultdict(lambda: 0)
@@ -50,7 +51,9 @@ class Rules:
     IP_CS_DIFF = False
     IP_CS_CALC = True
 
-    TCP_SEQACK_DIFF = True
+    TCP_SEQ_DIFF = False
+    TCP_NSEQ_DIFF = True
+    TCP_ACK_DIFF = True
     TCP_WIN_DIFF = True
     TCP_TS_DIFF = True
 
@@ -167,11 +170,18 @@ class Encoder:
                 session = (ip_src, ip_dst, ip_proto,
                            tcp_src, tcp_dst)
 
-                if Rules.TCP_SEQACK_DIFF:
+                if Rules.TCP_SEQ_DIFF:
                     d = tcp_seq - self.ctx.tcp_seq[session]
                     self.ctx.tcp_seq[session] = tcp_seq
                     p[tl_off+4:tl_off+8] = i2big(d, 4)
 
+                if Rules.TCP_NSEQ_DIFF:
+                    d = tcp_seq - self.ctx.tcp_nseq[session]
+                    self.ctx.tcp_nseq[session] = tcp_seq + \
+                        (padding_off - payload_off)
+                    p[tl_off+4:tl_off+8] = i2big(d, 4)
+
+                if Rules.TCP_ACK_DIFF:
                     d = tcp_ack - self.ctx.tcp_ack[session]
                     self.ctx.tcp_ack[session] = tcp_ack
                     p[tl_off+8:tl_off+12] = i2big(d, 4)
@@ -208,5 +218,7 @@ class Encoder:
                     p[ip_off+12:ip_off+18] = eth_dst
                     p[ip_off+18:tl_off+2] = ip_dst
                     p[tl_off+2:tl_off+4] = tcp_dst
-                # print(f'{b2str(p[:54])}')
+
+                # print(f'{b2str(p[16:70])}')
+
         return p
