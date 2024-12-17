@@ -19,12 +19,12 @@ class Stat:
 
     def print(self):
         print(
-            f'IPv4: {self.n_ipv4 / self.n_total:5.2%} {self.s_ipv4 / self.s_total:5.2%}')
+            f'IPv4: {self.n_ipv4 / self.n_total:6.2%} {self.s_ipv4 / self.s_total:6.2%}')
         print(
-            f'TCP:  {self.n_tcp / self.n_total:5.2%} {self.s_tcp / self.s_total:5.2%}')
-        print(f'TCP payload: {self.s_tcp_pl / self.s_total:5.2%}')
+            f'TCP:  {self.n_tcp / self.n_total:6.2%} {self.s_tcp / self.s_total:6.2%}')
+        print(f'TCP payload: {self.s_tcp_pl / self.s_total:6.2%}')
         print(
-            f'UDP:  {self.n_udp / self.n_total:5.2%} {self.s_udp / self.s_total:5.2%}')
+            f'UDP:  {self.n_udp / self.n_total:6.2%} {self.s_udp / self.s_total:6.2%}')
 
 
 class Context:
@@ -61,9 +61,13 @@ class Rules:
     TCP_WIN_DIFF = True
     TCP_TS_DIFF = True
     TCP_COMBINE_ADDR = True
+    TCP_CS_CALC = True
+    TCP_CS_CALC_THD = 64
 
     UDP_LEN_PCAP_LEN = True
     UDP_COMBINE_ADDR = False
+    UDP_CS_CALC = True
+    UDP_CS_CALC_THD = 64
 
 
 class Encoder:
@@ -122,16 +126,31 @@ class Encoder:
             ip_src = bytes(p[ip_off+12:ip_off+16])
             ip_dst = bytes(p[ip_off+16:ip_off+20])
 
-            if Rules.IP_CS_CALC:  # must come first
-                cs = 0
-                for i in range(ip_off, tl_off, 2):
-                    if i == ip_off + 10:
-                        continue
-                    cs += big2i(p[i:i+2])
-                while cs > 0xffff:
-                    cs = (cs // 2**16) + (cs % 2**16)
+            ip_pseudo_cs = sum([big2i(p[i:i+2])
+                               for i in range(ip_off+12, ip_off+20, 2)])
+            ip_pseudo_cs += ip_proto
+            ip_pseudo_cs += ip_len - 4*ip_ihl
 
-                p[ip_off+10:ip_off+12] = i2big(ip_cs + cs, 2)
+            def calc_tl_cs(start, end):
+                cs_calc = ip_pseudo_cs
+                for i in range(start, end-2, 2):
+                    cs_calc += big2i(p[i:i+2])
+                if (end % 2) == 0:
+                    cs_calc += big2i(p[end-2:end])
+                else:
+                    cs_calc += p[end-1] * 256
+                while cs_calc > 0xffff:
+                    cs_calc = (cs_calc // 2 ** 16) + (cs_calc % 2**16)
+                return cs_calc
+
+            if Rules.IP_CS_CALC:  # must come first
+                ip_cs_calc = 0
+                for i in range(ip_off, tl_off, 2):
+                    ip_cs_calc += big2i(p[i:i+2])
+                while ip_cs_calc > 0xffff:
+                    ip_cs_calc = (ip_cs_calc // 2**16) + (ip_cs_calc % 2**16)
+
+                p[ip_off+10:ip_off+12] = i2big(ip_cs_calc, 2)
 
             if Rules.IP_LEN_DIFF:
                 d = ip_len - self.ctx.ip_len[ip_src]
@@ -172,10 +191,16 @@ class Encoder:
                     tcp_seq = big2i(p[tl_off+4:tl_off+8])
                     tcp_ack = big2i(p[tl_off+8:tl_off+12])
                     tcp_win = big2i(p[tl_off+14:tl_off+16])
-                    tcp_opt = p[tl_off+20:payload_off]
+                    # tcp_cs = big2i(p[tl_off+16:tl_off+18])
+                    # tcp_opt = p[tl_off+20:payload_off]
 
                     session = (ip_src, ip_dst, ip_proto,
                                tcp_src, tcp_dst)
+
+                    if Rules.TCP_CS_CALC:  # must come first
+                        if padding_off - payload_off <= Rules.TCP_CS_CALC_THD:
+                            tcp_cs_calc = calc_tl_cs(tl_off, padding_off)
+                            p[tl_off+16:tl_off+18] = i2big(tcp_cs_calc, 2)
 
                     if Rules.TCP_SEQ_DIFF:
                         d = tcp_seq - self.ctx.tcp_seq[session]
@@ -235,8 +260,14 @@ class Encoder:
                     udp_src = bytes(p[tl_off:tl_off+2])
                     udp_dst = bytes(p[tl_off+2:tl_off+4])
                     udp_len = big2i(p[tl_off+4:tl_off+6])
-                    udp_cs = bytes(p[tl_off+6:tl_off+8])
+                    # udp_cs = bytes(p[tl_off+6:tl_off+8])
                     payload_off = tl_off + 8
+                    padding_off = ip_off + ip_len
+
+                    if Rules.UDP_CS_CALC:  # must come first
+                        if padding_off - payload_off <= Rules.UDP_CS_CALC_THD:
+                            udp_cs_calc = calc_tl_cs(tl_off, padding_off)
+                            p[tl_off+6:tl_off+8] = i2big(udp_cs_calc, 2)
 
                     if Rules.UDP_LEN_PCAP_LEN:
                         p[tl_off+4:tl_off+6] = i2big(ip_len - udp_len - 20, 2)
@@ -248,7 +279,7 @@ class Encoder:
                         p[ip_off+12:ip_off+18] = eth_dst
                         p[ip_off+18:tl_off+2] = ip_dst
                         p[tl_off+2:tl_off+4] = udp_dst
-
+                    # print(f'{b2str(p[8:16])}|{b2str(p[16:30])}|{b2str(p[30:50])}|{b2str(p[50:58])}')
                 case _:
                     ...
 
