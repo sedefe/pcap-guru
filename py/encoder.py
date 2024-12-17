@@ -14,6 +14,8 @@ class Stat:
         self.n_tcp = 0
         self.s_tcp = 0
         self.s_tcp_pl = 0
+        self.n_udp = 0
+        self.s_udp = 0
 
     def print(self):
         print(
@@ -21,6 +23,8 @@ class Stat:
         print(
             f'TCP:  {self.n_tcp / self.n_total:5.2%} {self.s_tcp / self.s_total:5.2%}')
         print(f'TCP payload: {self.s_tcp_pl / self.s_total:5.2%}')
+        print(
+            f'UDP:  {self.n_udp / self.n_total:5.2%} {self.s_udp / self.s_total:5.2%}')
 
 
 class Context:
@@ -56,8 +60,10 @@ class Rules:
     TCP_ACK_DIFF = True
     TCP_WIN_DIFF = True
     TCP_TS_DIFF = True
+    TCP_COMBINE_ADDR = True
 
-    COMBINE_ADDR = True
+    UDP_LEN_PCAP_LEN = True
+    UDP_COMBINE_ADDR = False
 
 
 class Encoder:
@@ -151,74 +157,99 @@ class Encoder:
                 self.ctx.ip_cs[ip_src] = ip_cs
                 p[ip_off+10:ip_off+12] = i2big(d, 2)
 
-            if ip_proto == IpType.TCP:
-                self.stat.n_tcp += 1
-                self.stat.s_tcp += cpl
+            match ip_proto:
+                case IpType.TCP:
+                    self.stat.n_tcp += 1
+                    self.stat.s_tcp += cpl
 
-                payload_off = tl_off + 4 * (p[tl_off+12] // 16)
-                padding_off = ip_off + ip_len
+                    payload_off = tl_off + 4 * (p[tl_off+12] // 16)
+                    padding_off = ip_off + ip_len
 
-                self.stat.s_tcp_pl += padding_off - payload_off
+                    self.stat.s_tcp_pl += padding_off - payload_off
 
-                tcp_src = bytes(p[tl_off:tl_off+2])
-                tcp_dst = bytes(p[tl_off+2:tl_off+4])
-                tcp_seq = big2i(p[tl_off+4:tl_off+8])
-                tcp_ack = big2i(p[tl_off+8:tl_off+12])
-                tcp_win = big2i(p[tl_off+14:tl_off+16])
-                tcp_opt = p[tl_off+20:payload_off]
+                    tcp_src = bytes(p[tl_off:tl_off+2])
+                    tcp_dst = bytes(p[tl_off+2:tl_off+4])
+                    tcp_seq = big2i(p[tl_off+4:tl_off+8])
+                    tcp_ack = big2i(p[tl_off+8:tl_off+12])
+                    tcp_win = big2i(p[tl_off+14:tl_off+16])
+                    tcp_opt = p[tl_off+20:payload_off]
 
-                session = (ip_src, ip_dst, ip_proto,
-                           tcp_src, tcp_dst)
+                    session = (ip_src, ip_dst, ip_proto,
+                               tcp_src, tcp_dst)
 
-                if Rules.TCP_SEQ_DIFF:
-                    d = tcp_seq - self.ctx.tcp_seq[session]
-                    self.ctx.tcp_seq[session] = tcp_seq
-                    p[tl_off+4:tl_off+8] = i2big(d, 4)
+                    if Rules.TCP_SEQ_DIFF:
+                        d = tcp_seq - self.ctx.tcp_seq[session]
+                        self.ctx.tcp_seq[session] = tcp_seq
+                        p[tl_off+4:tl_off+8] = i2big(d, 4)
 
-                if Rules.TCP_NSEQ_DIFF:
-                    d = tcp_seq - self.ctx.tcp_nseq[session]
-                    self.ctx.tcp_nseq[session] = tcp_seq + \
-                        (padding_off - payload_off)
-                    p[tl_off+4:tl_off+8] = i2big(d, 4)
+                    if Rules.TCP_NSEQ_DIFF:
+                        d = tcp_seq - self.ctx.tcp_nseq[session]
+                        self.ctx.tcp_nseq[session] = tcp_seq + \
+                            (padding_off - payload_off)
+                        p[tl_off+4:tl_off+8] = i2big(d, 4)
 
-                if Rules.TCP_ACK_DIFF:
-                    d = tcp_ack - self.ctx.tcp_ack[session]
-                    self.ctx.tcp_ack[session] = tcp_ack
-                    p[tl_off+8:tl_off+12] = i2big(d, 4)
+                    if Rules.TCP_ACK_DIFF:
+                        d = tcp_ack - self.ctx.tcp_ack[session]
+                        self.ctx.tcp_ack[session] = tcp_ack
+                        p[tl_off+8:tl_off+12] = i2big(d, 4)
 
-                if Rules.TCP_WIN_DIFF:
-                    d = tcp_win - self.ctx.tcp_win[session]
-                    self.ctx.tcp_win[session] = tcp_win
-                    p[tl_off+14:tl_off+16] = i2big(d, 2)
+                    if Rules.TCP_WIN_DIFF:
+                        d = tcp_win - self.ctx.tcp_win[session]
+                        self.ctx.tcp_win[session] = tcp_win
+                        p[tl_off+14:tl_off+16] = i2big(d, 2)
 
-                if Rules.TCP_TS_DIFF:
-                    i = tl_off + 20
-                    while i < payload_off:
-                        opt_kind = p[i]
-                        match opt_kind:
-                            case 0: i += 1
-                            case 1: i += 1
-                            case 2: i += 4
-                            case 3: i += 3
-                            case 4: i += 2
-                            case 5: i += p[i+1]
-                            case 8:
-                                tcp_ts = big2i(p[i+2:i+10])
-                                d = tcp_ts - self.ctx.tcp_ts[session]
-                                self.ctx.tcp_ts[session] = tcp_ts
-                                p[i+2:i+10] = i2big(d, 8)
-                                i += 10
-                            case _:
-                                assert False, f'unknown case {opt_kind}'
+                    if Rules.TCP_TS_DIFF:
+                        i = tl_off + 20
+                        while i < payload_off:
+                            opt_kind = p[i]
+                            match opt_kind:
+                                case 0: i += 1
+                                case 1: i += 1
+                                case 2: i += 4
+                                case 3: i += 3
+                                case 4: i += 2
+                                case 5: i += p[i+1]
+                                case 8:
+                                    tcp_ts = big2i(p[i+2:i+10])
+                                    d = tcp_ts - self.ctx.tcp_ts[session]
+                                    self.ctx.tcp_ts[session] = tcp_ts
+                                    p[i+2:i+10] = i2big(d, 8)
+                                    i += 10
+                                case _:
+                                    assert False, f'unknown case {opt_kind}'
 
-                if Rules.COMBINE_ADDR:
-                    p[eth_off+0:eth_off+6] = eth_src
-                    p[eth_off+6:eth_off+10] = ip_src
-                    p[eth_off+10:eth_off+12] = tcp_src
-                    p[ip_off+12:ip_off+18] = eth_dst
-                    p[ip_off+18:tl_off+2] = ip_dst
-                    p[tl_off+2:tl_off+4] = tcp_dst
+                    if Rules.TCP_COMBINE_ADDR:
+                        p[eth_off+0:eth_off+6] = eth_src
+                        p[eth_off+6:eth_off+10] = ip_src
+                        p[eth_off+10:eth_off+12] = tcp_src
+                        p[ip_off+12:ip_off+18] = eth_dst
+                        p[ip_off+18:tl_off+2] = ip_dst
+                        p[tl_off+2:tl_off+4] = tcp_dst
 
-                # print(f'{b2str(p[16:70])}')
+                    # print(f'{b2str(p[16:70])}')
+
+                case IpType.UDP:
+                    self.stat.n_udp += 1
+                    self.stat.s_udp += cpl
+
+                    udp_src = bytes(p[tl_off:tl_off+2])
+                    udp_dst = bytes(p[tl_off+2:tl_off+4])
+                    udp_len = big2i(p[tl_off+4:tl_off+6])
+                    udp_cs = bytes(p[tl_off+6:tl_off+8])
+                    payload_off = tl_off + 8
+
+                    if Rules.UDP_LEN_PCAP_LEN:
+                        p[tl_off+4:tl_off+6] = i2big(ip_len - udp_len - 20, 2)
+
+                    if Rules.UDP_COMBINE_ADDR:
+                        p[eth_off+0:eth_off+6] = eth_src
+                        p[eth_off+6:eth_off+10] = ip_src
+                        p[eth_off+10:eth_off+12] = udp_src
+                        p[ip_off+12:ip_off+18] = eth_dst
+                        p[ip_off+18:tl_off+2] = ip_dst
+                        p[tl_off+2:tl_off+4] = udp_dst
+
+                case _:
+                    ...
 
         return p
