@@ -61,6 +61,7 @@ class Rules:
     TCP_WIN_DIFF = True
     TCP_TS_DIFF = True
     TCP_COMBINE_ADDR = True
+    TCP_OPT_SACK_DIFF = True
     TCP_CS_CALC = True
     TCP_CS_CALC_THD = 64
 
@@ -223,25 +224,32 @@ class Encoder:
                         self.ctx.tcp_win[session] = tcp_win
                         p[tl_off+14:tl_off+16] = i2big(d, 2)
 
-                    if Rules.TCP_TS_DIFF:
-                        i = tl_off + 20
-                        while i < payload_off:
-                            opt_kind = p[i]
-                            match opt_kind:
-                                case 0: i += 1
-                                case 1: i += 1
-                                case 2: i += 4
-                                case 3: i += 3
-                                case 4: i += 2
-                                case 5: i += p[i+1]
-                                case 8:
+                    i = tl_off + 20
+                    while i < payload_off:
+                        opt_kind = p[i]
+                        match opt_kind:
+                            case 0: i += 1
+                            case 1: i += 1
+                            case 2: i += 4
+                            case 3: i += 3
+                            case 4: i += 2
+                            case 5:
+                                if Rules.TCP_OPT_SACK_DIFF:
+                                    for j in range(i+2, i+p[i+1], 8):
+                                        sack_b = big2i(p[j+0:j+4])
+                                        sack_e = big2i(p[j+4:j+8])
+                                        p[j+0:j+4] = i2big(sack_b - tcp_ack, 4)
+                                        p[j+4:j+8] = i2big(sack_e - sack_b, 4)
+                                i += p[i+1]
+                            case 8:
+                                if Rules.TCP_TS_DIFF:
                                     tcp_ts = big2i(p[i+2:i+10])
                                     d = tcp_ts - self.ctx.tcp_ts[session]
                                     self.ctx.tcp_ts[session] = tcp_ts
                                     p[i+2:i+10] = i2big(d, 8)
-                                    i += 10
-                                case _:
-                                    assert False, f'unknown case {opt_kind}'
+                                i += 10
+                            case _:
+                                assert False, f'unknown case {opt_kind}'
 
                     if Rules.TCP_COMBINE_ADDR:
                         p[eth_off+0:eth_off+6] = eth_src
@@ -251,7 +259,7 @@ class Encoder:
                         p[ip_off+18:tl_off+2] = ip_dst
                         p[tl_off+2:tl_off+4] = tcp_dst
 
-                    # print(f'{b2str(p[16:70])}')
+                    # print(f'{b2str(p[16:ip_off])}|{b2str(p[ip_off:tl_off])}|{b2str(p[tl_off:payload_off])}')
 
                 case IpType.UDP:
                     self.stat.n_udp += 1
