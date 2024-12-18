@@ -12,7 +12,7 @@ ZSTD_LEVEL = 1
 
 def main(argv):
     if len(argv) < 2:
-        print(f"Usage: {argv[0]} FILE")
+        print(f"Usage: {argv[0]} PCAP_FILE")
 
     fpath_in = Path(argv[1])
     with open(fpath_in, 'rb') as f:

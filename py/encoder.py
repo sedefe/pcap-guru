@@ -19,12 +19,12 @@ class Stat:
 
     def print(self):
         print(
-            f'IPv4: {self.n_ipv4 / self.n_total:6.2%} {self.s_ipv4 / self.s_total:6.2%}')
+            f'IPv4: {self.n_ipv4 / self.n_total:7.2%} {self.s_ipv4 / self.s_total:7.2%}')
         print(
-            f'TCP:  {self.n_tcp / self.n_total:6.2%} {self.s_tcp / self.s_total:6.2%}')
-        print(f'TCP payload: {self.s_tcp_pl / self.s_total:6.2%}')
+            f'TCP:  {self.n_tcp / self.n_total:7.2%} {self.s_tcp / self.s_total:7.2%}')
+        print(f'TCP payload: {self.s_tcp_pl / self.s_total:7.2%}')
         print(
-            f'UDP:  {self.n_udp / self.n_total:6.2%} {self.s_udp / self.s_total:6.2%}')
+            f'UDP:  {self.n_udp / self.n_total:7.2%} {self.s_udp / self.s_total:7.2%}')
 
 
 class Context:

@@ -1,0 +1,3 @@
+- Data: <https://tcpreplay.appneta.com/wiki/captures.html#bigflows-pcap>
+- ~3% better CR for TCP/UDP, ~30% for ICMP/DNS
+- Ain't much but it's honest work
