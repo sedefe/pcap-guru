@@ -194,6 +194,10 @@ class Encoder:
                     tcp_seq = big2i(p[tl_off+4:tl_off+8])
                     tcp_ack = big2i(p[tl_off+8:tl_off+12])
                     tcp_win = big2i(p[tl_off+14:tl_off+16])
+                    tcp_flags = p[tl_off+13]
+                    tcp_payload_len = padding_off - payload_off
+                    if tcp_flags & 0x02:
+                        tcp_payload_len = 1
                     # tcp_cs = big2i(p[tl_off+16:tl_off+18])
                     # tcp_opt = p[tl_off+20:payload_off]
 
@@ -212,8 +216,7 @@ class Encoder:
 
                     if Rules.TCP_NSEQ_DIFF:
                         d = tcp_seq - self.ctx.tcp_nseq[session]
-                        self.ctx.tcp_nseq[session] = tcp_seq + \
-                            (padding_off - payload_off)
+                        self.ctx.tcp_nseq[session] = tcp_seq + tcp_payload_len
                         p[tl_off+4:tl_off+8] = i2big(d, 4)
 
                     if Rules.TCP_ACK_DIFF:
