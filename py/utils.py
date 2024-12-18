@@ -26,3 +26,12 @@ def ip2str(b):
 
 def b2str(b):
     return ' '.join(map(lambda x: f'{x:02x}', b))
+
+
+def shuffle(b):
+    n = len(b) // 2
+    b1 = b.copy()
+    for i in range(n):
+        b1[2*i] = b[i]
+        b1[2*i+1] = b[n+i]
+    return b1

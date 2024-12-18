@@ -1,6 +1,6 @@
 import numpy as np
 
-from utils import lit2i, big2i, i2big, i2lit, ip2str, b2str
+from utils import lit2i, big2i, i2big, i2lit, ip2str, b2str, shuffle
 from const import EtherType, IpType
 from collections import defaultdict, Counter
 
@@ -40,7 +40,8 @@ class Context:
         self.tcp_nseq = defaultdict(lambda: 0)
         self.tcp_ack = defaultdict(lambda: 0)
         self.tcp_win = defaultdict(lambda: 0)
-        self.tcp_ts = defaultdict(lambda: 0)
+        self.tcp_ts_val = defaultdict(lambda: 0)
+        self.tcp_ts_ecr = defaultdict(lambda: 0)
 
 
 class Rules:
@@ -58,8 +59,10 @@ class Rules:
     TCP_SEQ_DIFF = False
     TCP_NSEQ_DIFF = True
     TCP_ACK_DIFF = True
+    TCP_SEQACK_SHUFFLE = False
     TCP_WIN_DIFF = True
     TCP_TS_DIFF = True
+    TCP_TS_DIFF_SHUFFLE = True
     TCP_COMBINE_ADDR = True
     TCP_OPT_SACK_DIFF = True
     TCP_CS_CALC = True
@@ -97,7 +100,6 @@ class Encoder:
 
         if Rules.PCAP_OPL_DIFF:
             p[12:16] = i2big(opl - cpl, 4)
-
         eth_off = 16
 
         # Eth
@@ -219,6 +221,9 @@ class Encoder:
                         self.ctx.tcp_ack[session] = tcp_ack
                         p[tl_off+8:tl_off+12] = i2big(d, 4)
 
+                    if Rules.TCP_SEQACK_SHUFFLE:
+                        p[tl_off+4:tl_off+12] = shuffle(p[tl_off+4:tl_off+12])
+
                     if Rules.TCP_WIN_DIFF:
                         d = tcp_win - self.ctx.tcp_win[session]
                         self.ctx.tcp_win[session] = tcp_win
@@ -243,10 +248,20 @@ class Encoder:
                                 i += p[i+1]
                             case 8:
                                 if Rules.TCP_TS_DIFF:
-                                    tcp_ts = big2i(p[i+2:i+10])
-                                    d = tcp_ts - self.ctx.tcp_ts[session]
-                                    self.ctx.tcp_ts[session] = tcp_ts
-                                    p[i+2:i+10] = i2big(d, 8)
+                                    tcp_ts_val = big2i(p[i+2:i+6])
+                                    d = tcp_ts_val - \
+                                        self.ctx.tcp_ts_val[session]
+                                    self.ctx.tcp_ts_val[session] = tcp_ts_val
+                                    p[i+2:i+6] = i2big(d, 4)
+
+                                    tcp_ts_ecr = big2i(p[i+6:i+10])
+                                    d = tcp_ts_ecr - \
+                                        self.ctx.tcp_ts_ecr[session]
+                                    self.ctx.tcp_ts_ecr[session] = tcp_ts_ecr
+                                    p[i+6:i+10] = i2big(d, 4)
+
+                                    if Rules.TCP_TS_DIFF_SHUFFLE:
+                                        p[i+2:i+10] = shuffle(p[i+2:i+10])
                                 i += 10
                             case _:
                                 assert False, f'unknown case {opt_kind}'
