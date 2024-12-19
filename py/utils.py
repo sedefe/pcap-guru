@@ -1,14 +1,14 @@
 def big2i(bs):
     s = 0
     for b in bs:
-        s = s*256 + int(b)
+        s = s*256 + b
     return s
 
 
 def lit2i(bs):
     s = 0
     for b in bs[::-1]:
-        s = s*256 + int(b)
+        s = s*256 + b
     return s
 
 

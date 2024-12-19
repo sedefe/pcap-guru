@@ -5,7 +5,7 @@ from const import EtherType, IpType
 from collections import defaultdict, Counter
 
 
-class Stat:
+class Context:
     def __init__(self):
         self.n_total = 0
         self.s_total = 0
@@ -17,18 +17,6 @@ class Stat:
         self.n_udp = 0
         self.s_udp = 0
 
-    def print(self):
-        print(
-            f'IPv4: {self.n_ipv4 / self.n_total:7.2%} {self.s_ipv4 / self.s_total:7.2%}')
-        print(
-            f'TCP:  {self.n_tcp / self.n_total:7.2%} {self.s_tcp / self.s_total:7.2%}')
-        print(f'TCP payload: {self.s_tcp_pl / self.s_total:7.2%}')
-        print(
-            f'UDP:  {self.n_udp / self.n_total:7.2%} {self.s_udp / self.s_total:7.2%}')
-
-
-class Context:
-    def __init__(self):
         self.ts = 0
 
         self.ip_len = defaultdict(lambda: 0)
@@ -36,12 +24,39 @@ class Context:
         self.ip_ttl = defaultdict(lambda: 0)
         self.ip_cs = defaultdict(lambda: 0)
 
+        self.tcp_sessions = set()
         self.tcp_seq = defaultdict(lambda: 0)
         self.tcp_nseq = defaultdict(lambda: 0)
         self.tcp_ack = defaultdict(lambda: 0)
         self.tcp_win = defaultdict(lambda: 0)
         self.tcp_ts_val = defaultdict(lambda: 0)
         self.tcp_ts_ecr = defaultdict(lambda: 0)
+        self.tcp_mss = defaultdict(lambda: 0)
+
+        self.udp_sessions = set()
+
+    def print_stat(self):
+        print(f'Total {self.n_total} packets')
+        print(f'=== IPv4 ===')
+        print(
+            f'packets: {self.n_ipv4 / self.n_total:7.2%}, size: {self.s_ipv4 / self.s_total:7.2%}')
+
+        print(f'=== TCP ===')
+        print(
+            f'packets: {self.n_tcp / self.n_total:7.2%}, size: {self.s_tcp / self.s_total:7.2%}')
+        print(f'payload: {self.s_tcp_pl / self.s_total:7.2%}')
+        n_tcp_sessions = len(self.tcp_sessions)
+        print(f'{n_tcp_sessions} sessions')
+        print(
+            f'avg: {self.s_tcp/n_tcp_sessions/1e3:.2f} KB in {self.n_tcp/n_tcp_sessions:.2f} packets')
+
+        print(f'=== UDP ===')
+        print(
+            f'packets: {self.n_udp / self.n_total:7.2%}, size: {self.s_udp / self.s_total:7.2%}')
+        n_udp_sessions = len(self.udp_sessions)
+        print(f'{n_udp_sessions} sessions')
+        print(
+            f'avg: {self.s_udp/n_udp_sessions/1e3:.2f} KB in {self.n_udp/n_udp_sessions:.2f} packets')
 
 
 class Rules:
@@ -61,10 +76,11 @@ class Rules:
     TCP_ACK_DIFF = True
     TCP_SEQACK_SHUFFLE = False
     TCP_WIN_DIFF = True
-    TCP_TS_DIFF = True
-    TCP_TS_DIFF_SHUFFLE = True
-    TCP_COMBINE_ADDR = True
+    TCP_OPT_TS_DIFF = True
+    TCP_OPT_TS_DIFF_SHUFFLE = True
     TCP_OPT_SACK_DIFF = True
+    TCP_OPT_MSS_DIFF = True
+    TCP_COMBINE_ADDR = True
     TCP_CS_CALC = True
     TCP_CS_CALC_THD = 64
 
@@ -77,8 +93,6 @@ class Rules:
 class Encoder:
     def __init__(self):
         self.ctx = Context()
-        self.stat = Stat()
-        self.n_packets = 0
 
     def process(self, p):
         p = bytearray(p)
@@ -86,8 +100,8 @@ class Encoder:
         cpl = lit2i(p[8:12])
         opl = lit2i(p[12:16])
 
-        self.stat.n_total += 1
-        self.stat.s_total += cpl
+        self.ctx.n_total += 1
+        self.ctx.s_total += cpl
 
         # Pcap
         if Rules.PCAP_TS_DIFF:
@@ -114,8 +128,8 @@ class Encoder:
 
         # IP
         if ether_type == EtherType.IPv4:
-            self.stat.n_ipv4 += 1
-            self.stat.s_ipv4 += cpl
+            self.ctx.n_ipv4 += 1
+            self.ctx.s_ipv4 += cpl
 
             ip_ihl = p[ip_off] % 16
             tl_off = ip_off + 4 * ip_ihl
@@ -181,13 +195,13 @@ class Encoder:
 
             match ip_proto:
                 case IpType.TCP:
-                    self.stat.n_tcp += 1
-                    self.stat.s_tcp += cpl
+                    self.ctx.n_tcp += 1
+                    self.ctx.s_tcp += cpl
 
                     payload_off = tl_off + 4 * (p[tl_off+12] // 16)
                     padding_off = ip_off + ip_len
 
-                    self.stat.s_tcp_pl += padding_off - payload_off
+                    self.ctx.s_tcp_pl += padding_off - payload_off
 
                     tcp_src = bytes(p[tl_off:tl_off+2])
                     tcp_dst = bytes(p[tl_off+2:tl_off+4])
@@ -195,14 +209,16 @@ class Encoder:
                     tcp_ack = big2i(p[tl_off+8:tl_off+12])
                     tcp_win = big2i(p[tl_off+14:tl_off+16])
                     tcp_flags = p[tl_off+13]
+                    tcp_flag_syn = tcp_flags & 0x02
                     tcp_payload_len = padding_off - payload_off
-                    if tcp_flags & 0x02:
+                    if tcp_flag_syn:
                         tcp_payload_len = 1
                     # tcp_cs = big2i(p[tl_off+16:tl_off+18])
                     # tcp_opt = p[tl_off+20:payload_off]
 
                     session = (ip_src, ip_dst, ip_proto,
                                tcp_src, tcp_dst)
+                    self.ctx.tcp_sessions.add(session)
 
                     if Rules.TCP_CS_CALC:  # must come first
                         if padding_off - payload_off <= Rules.TCP_CS_CALC_THD:
@@ -238,7 +254,13 @@ class Encoder:
                         match opt_kind:
                             case 0: i += 1
                             case 1: i += 1
-                            case 2: i += 4
+                            case 2:
+                                if Rules.TCP_OPT_MSS_DIFF:
+                                    mss = big2i(p[i+2:i+4])
+                                    d = mss - self.ctx.tcp_mss[ip_src]
+                                    self.ctx.tcp_mss[ip_src] = mss
+                                    p[i+2:i+4] = i2big(d, 2)
+                                i += 4
                             case 3: i += 3
                             case 4: i += 2
                             case 5:
@@ -250,7 +272,7 @@ class Encoder:
                                         p[j+4:j+8] = i2big(sack_e - sack_b, 4)
                                 i += p[i+1]
                             case 8:
-                                if Rules.TCP_TS_DIFF:
+                                if Rules.TCP_OPT_TS_DIFF:
                                     tcp_ts_val = big2i(p[i+2:i+6])
                                     d = tcp_ts_val - \
                                         self.ctx.tcp_ts_val[session]
@@ -263,7 +285,7 @@ class Encoder:
                                     self.ctx.tcp_ts_ecr[session] = tcp_ts_ecr
                                     p[i+6:i+10] = i2big(d, 4)
 
-                                    if Rules.TCP_TS_DIFF_SHUFFLE:
+                                    if Rules.TCP_OPT_TS_DIFF_SHUFFLE:
                                         p[i+2:i+10] = shuffle(p[i+2:i+10])
                                 i += 10
                             case _:
@@ -277,11 +299,13 @@ class Encoder:
                         p[ip_off+18:tl_off+2] = ip_dst
                         p[tl_off+2:tl_off+4] = tcp_dst
 
-                    # print(f'{b2str(p[16:ip_off])}|{b2str(p[ip_off:tl_off])}|{b2str(p[tl_off:payload_off])}')
+                    # if tcp_flag_syn:
+                    #     print(  # f'{b2str(p[16:ip_off])}|{b2str(p[ip_off:tl_off])}|'
+                    #         f'{b2str(p[tl_off:tl_off+20])}|{b2str(p[tl_off+20:payload_off])}')
 
                 case IpType.UDP:
-                    self.stat.n_udp += 1
-                    self.stat.s_udp += cpl
+                    self.ctx.n_udp += 1
+                    self.ctx.s_udp += cpl
 
                     udp_src = bytes(p[tl_off:tl_off+2])
                     udp_dst = bytes(p[tl_off+2:tl_off+4])
@@ -289,6 +313,10 @@ class Encoder:
                     # udp_cs = bytes(p[tl_off+6:tl_off+8])
                     payload_off = tl_off + 8
                     padding_off = ip_off + ip_len
+
+                    session = (ip_src, ip_dst, ip_proto,
+                               udp_src, udp_dst)
+                    self.ctx.udp_sessions.add(session)
 
                     if Rules.UDP_CS_CALC:  # must come first
                         if padding_off - payload_off <= Rules.UDP_CS_CALC_THD:

@@ -40,8 +40,6 @@ def main(argv):
 
         i += PCAP_PACKET_HEADER_LEN + cpl
 
-    print(f"{n_packets} packets")
-
     data_processed = b''.join(res)
     n_compressed_1 = len(zstd.ZstdCompressor(
         level=ZSTD_LEVEL).compress(data_processed))
@@ -49,7 +47,7 @@ def main(argv):
     print(f"CR1: {cr1:.3f} ({len(data_processed) / 1e6:.2f} -> {n_compressed_1 / 1e6:.2f} MB), "
           f"{cr1/cr0 - 1:+.2%}")
 
-    encoder.stat.print()
+    encoder.ctx.print_stat()
 
 
 if __name__ == "__main__":
