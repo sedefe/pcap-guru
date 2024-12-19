@@ -4,7 +4,7 @@ PCAP_PACKET_HEADER_LEN = 16
 
 class EtherType:
     IPv4 = 0x0800
-    IPv8 = 0x86dd
+    IPv6 = 0x86dd
     VLAN = 0x8100
 
 
