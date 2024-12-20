@@ -26,7 +26,7 @@ class Context:
         self.ipv4_ttl = defaultdict(lambda: 0)
         self.ipv4_cs = defaultdict(lambda: 0)
 
-        self.tcp_sessions = set()
+        self.tl_sessions = {}
         self.tcp_seq = defaultdict(lambda: 0)
         self.tcp_nseq = defaultdict(lambda: 0)
         self.tcp_ack = defaultdict(lambda: 0)
@@ -34,8 +34,6 @@ class Context:
         self.tcp_ts_val = defaultdict(lambda: 0)
         self.tcp_ts_ecr = defaultdict(lambda: 0)
         self.tcp_mss = defaultdict(lambda: 0)
-
-        self.udp_sessions = set()
 
     def print_stat(self):
         print(f'Total {self.n_total} packets')
@@ -50,7 +48,8 @@ class Context:
         print(f'  packets: {self.n_tcp / self.n_total:7.2%}')
         print(f'  size:    {self.s_tcp / self.s_total:7.2%}')
         print(f'  payload: {self.s_tcp_pl / self.s_total:7.2%}')
-        n_tcp_sessions = len(self.tcp_sessions)
+        n_tcp_sessions = len(
+            [s for s in self.tl_sessions if s[2] == IpType.TCP])
         print(f'{n_tcp_sessions} sessions')
         if n_tcp_sessions > 0:
             print(f'  avg {self.s_tcp/n_tcp_sessions/1e3:5.2f} KB')
@@ -59,7 +58,8 @@ class Context:
         print(f'=== UDP ===')
         print(f'  packets: {self.n_udp / self.n_total:7.2%}')
         print(f'  size:    {self.s_udp / self.s_total:7.2%}')
-        n_udp_sessions = len(self.udp_sessions)
+        n_udp_sessions = len(
+            [s for s in self.tl_sessions if s[2] == IpType.UDP])
         print(f'{n_udp_sessions} sessions')
         if n_udp_sessions > 0:
             print(f'  avg {self.s_udp/n_udp_sessions/1e3:5.2f} KB')
@@ -89,12 +89,12 @@ class Rules:
     TCP_OPT_TS_DIFF_SHUFFLE = True
     TCP_OPT_SACK_DIFF = True
     TCP_OPT_MSS_DIFF = True
-    TCP_COMBINE_ADDR = True
+    TCP_ENUM_SESSIONS = True
     TCP_CS_CALC = True
     TCP_CS_CALC_THD = 64
 
     UDP_LEN_IP_LEN = True
-    UDP_COMBINE_ADDR = False
+    UDP_ENUM_SESSIONS = True
     UDP_CS_CALC = True
     UDP_CS_CALC_THD = 64
 
@@ -149,13 +149,9 @@ class Encoder:
                 ip_ttl = p[il_off+8]
                 ip_cs = big2i(p[il_off+10:il_off+12])
 
-                ip_src = bytes(p[il_off+12:il_off+16])
-                ip_dst = bytes(p[il_off+16:il_off+20])
-
-                ip_pseudo_cs = sum([big2i(p[i:i+2])
-                                    for i in range(il_off+12, il_off+20, 2)])
-                ip_pseudo_cs += ip_proto
-                ip_pseudo_cs += tl_len
+                ip_addr_off = il_off + 12
+                ip_src = bytes(p[ip_addr_off+0:ip_addr_off+4])
+                ip_dst = bytes(p[ip_addr_off+4:ip_addr_off+8])
 
                 if Rules.IPV4_CS_CALC:  # must come first
                     ip_cs_calc = 0
@@ -197,14 +193,10 @@ class Encoder:
 
                 tl_len = big2i(p[il_off+4:il_off+6])
                 ip_proto = p[il_off+6]
-                ip_src = bytes(p[il_off+8:il_off+24])
-                ip_dst = bytes(p[il_off+24:il_off+40])
+                ip_addr_off = il_off + 8
+                ip_src = bytes(p[ip_addr_off+0:ip_addr_off+16])
+                ip_dst = bytes(p[ip_addr_off+16:ip_addr_off+32])
                 tl_off = il_off + 40
-
-                ip_pseudo_cs = sum([big2i(p[i:i+2])
-                                    for i in range(il_off+8, il_off+40, 2)])
-                ip_pseudo_cs += ip_proto
-                ip_pseudo_cs += tl_len
 
                 if Rules.IPV6_LEN_PCAP_LEN:
                     d = cpl - tl_len
@@ -227,6 +219,19 @@ class Encoder:
                 cs_calc = (cs_calc // 2 ** 16) + (cs_calc % 2**16)
             return cs_calc
 
+        if ip_proto in (IpType.TCP, IpType.UDP):
+            ip_pseudo_cs = sum([big2i(p[i:i+2])
+                                for i in range(ip_addr_off, tl_off, 2)])
+            ip_pseudo_cs += ip_proto
+            ip_pseudo_cs += tl_len
+            tl_port_src = bytes(p[tl_off+0:tl_off+2])
+            tl_port_dst = bytes(p[tl_off+2:tl_off+4])
+            session = (ip_src, ip_dst, ip_proto,
+                       tl_port_src, tl_port_dst)
+            new_session = not session in self.ctx.tl_sessions
+            if new_session:
+                self.ctx.tl_sessions[session] = len(self.ctx.tl_sessions)
+
         match ip_proto:
             case IpType.TCP:
                 self.ctx.n_tcp += 1
@@ -237,8 +242,6 @@ class Encoder:
 
                 self.ctx.s_tcp_pl += padding_off - payload_off
 
-                tcp_src = bytes(p[tl_off:tl_off+2])
-                tcp_dst = bytes(p[tl_off+2:tl_off+4])
                 tcp_seq = big2i(p[tl_off+4:tl_off+8])
                 tcp_ack = big2i(p[tl_off+8:tl_off+12])
                 tcp_win = big2i(p[tl_off+14:tl_off+16])
@@ -249,10 +252,6 @@ class Encoder:
                     tcp_payload_len = 1
                 # tcp_cs = big2i(p[tl_off+16:tl_off+18])
                 # tcp_opt = p[tl_off+20:payload_off]
-
-                session = (ip_src, ip_dst, ip_proto,
-                           tcp_src, tcp_dst)
-                self.ctx.tcp_sessions.add(session)
 
                 if Rules.TCP_CS_CALC:  # must come first
                     if padding_off - payload_off <= Rules.TCP_CS_CALC_THD:
@@ -329,35 +328,24 @@ class Encoder:
                         case _:
                             assert False, f'unknown case {opt_kind}'
 
-                if Rules.TCP_COMBINE_ADDR:
-                    if ether_type == EtherType.IPv4:
-                        p[eth_off+0:eth_off+6] = eth_src
-                        p[eth_off+6:eth_off+10] = ip_src
-                        p[eth_off+10:eth_off+12] = tcp_src
-                        p[il_off+12:il_off+18] = eth_dst
-                        p[il_off+18:tl_off+2] = ip_dst
-                        p[tl_off+2:tl_off+4] = tcp_dst
-                    if ether_type == EtherType.IPv6:
-                        ...
-
+                if Rules.TCP_ENUM_SESSIONS:
+                    if not new_session:
+                        p[ip_addr_off:tl_off + 4] = \
+                            i2big(self.ctx.tl_sessions[session],
+                                  tl_off + 4 - ip_addr_off)
                 # if tcp_flag_syn:
-                #     print(  # f'{b2str(p[16:ip_off])}|{b2str(p[ip_off:tl_off])}|'
-                #         f'{b2str(p[tl_off:tl_off+20])}|{b2str(p[tl_off+20:payload_off])}')
+                # print(f'{b2str(p[16:il_off])}|'
+                #       f'{b2str(p[il_off:tl_off])}|'
+                #       f'{b2str(p[tl_off:tl_off+20])}|{b2str(p[tl_off+20:payload_off])}')
 
             case IpType.UDP:
                 self.ctx.n_udp += 1
                 self.ctx.s_udp += cpl
 
-                udp_src = bytes(p[tl_off:tl_off+2])
-                udp_dst = bytes(p[tl_off+2:tl_off+4])
                 udp_len = big2i(p[tl_off+4:tl_off+6])
                 # udp_cs = bytes(p[tl_off+6:tl_off+8])
                 payload_off = tl_off + 8
                 padding_off = tl_off + tl_len
-
-                session = (ip_src, ip_dst, ip_proto,
-                           udp_src, udp_dst)
-                self.ctx.udp_sessions.add(session)
 
                 if Rules.UDP_CS_CALC:  # must come first
                     if padding_off - payload_off <= Rules.UDP_CS_CALC_THD:
@@ -367,16 +355,11 @@ class Encoder:
                 if Rules.UDP_LEN_IP_LEN:
                     p[tl_off+4:tl_off+6] = i2big(tl_len - udp_len - 20, 2)
 
-                if Rules.UDP_COMBINE_ADDR:
-                    if ether_type == EtherType.IPv4:
-                        p[eth_off+0:eth_off+6] = eth_src
-                        p[eth_off+6:eth_off+10] = ip_src
-                        p[eth_off+10:eth_off+12] = udp_src
-                        p[il_off+12:il_off+18] = eth_dst
-                        p[il_off+18:tl_off+2] = ip_dst
-                        p[tl_off+2:tl_off+4] = udp_dst
-                    if ether_type == EtherType.IPv6:
-                        ...  # Todo
+                if Rules.UDP_ENUM_SESSIONS:
+                    if not new_session:
+                        p[ip_addr_off:tl_off + 4] = \
+                            i2big(self.ctx.tl_sessions[session],
+                                  tl_off + 4 - ip_addr_off)
 
             case _:
                 ...
